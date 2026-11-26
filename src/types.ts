@@ -10,6 +10,9 @@
  *   L2 解析层：Draft → Citation[] / SourceDoc[] / ClaimUnit[]
  *   L3 验证层：ClaimUnit[] → UnitVerdict[]（每条 verdict 带一组结构化 Failure）
  *   L4 决策层：VerificationReport + 重试记忆 → Decision（放行/标记/重写/熔断）
+ *
+ * 本文件在流水线中的位置：它不属于任何单层，而是 L2 → L3 → L4 之间传递的公共语言——
+ * 解析层按这里的形状产出，验证层按这里的形状判定，决策层按这里的形状决策。
  */
 
 /**
@@ -47,9 +50,11 @@ export interface SourceDoc {
   readonly url?: string
   /** 来源正文（已清洗 HTML、已截断）；抓取失败时为空串。 */
   readonly text: string
+  /** 来源渠道：决定“正文从哪来”，见 {@link SourceOrigin}。 */
   readonly origin: SourceOrigin
   /** 获取时间戳（毫秒），用于 TTL/去重与调试。 */
   readonly retrievedAt: number
+  /** 可用性：正文是否真的拿到了。 */
   readonly status: SourceStatus
   /** 失败原因（HTTP 状态码、超时、空正文等）。 */
   readonly error?: string
@@ -59,6 +64,7 @@ export interface SourceDoc {
 export interface Citation {
   /** 原文命中片段，例如 `[1]`、`(Smith, 2020)`。 */
   readonly raw: string
+  /** 引用形态，决定 `marker` 怎么归一化。 */
   readonly kind: CitationKind
   /**
    * 归一化后的解析标识：
@@ -71,6 +77,7 @@ export interface Citation {
   readonly marker: string
   /** 在草稿全文中的字符偏移（含头不含尾），用于绑定到句子。 */
   readonly start: number
+  /** 在草稿全文中的结束偏移（不含），`raw` 对应 `draft.slice(start, end)`。 */
   readonly end: number
 }
 
@@ -99,7 +106,9 @@ export type Severity = 'critical' | 'major' | 'minor'
 
 /** 一条可回传给模型的结构化失败信号。 */
 export interface Failure {
+  /** 失败类型，决定反馈包里生成哪一条修复指令。 */
   readonly kind: FailKind
+  /** 严重程度，决定单元最终落到 supported / partial / unsupported。 */
   readonly severity: Severity
   /** 面向模型/用户的确定性描述（不含主观判断词）。 */
   readonly detail: string
@@ -123,6 +132,7 @@ export interface ClaimUnit {
   readonly prose: string
   /** 句子在草稿中的偏移区间（含头不含尾）。 */
   readonly start: number
+  /** 句子在草稿中的结束偏移（不含）。 */
   readonly end: number
   /** 绑定到该句的引用（可能为空：整段无引用的陈述不进入校验）。 */
   readonly citations: readonly Citation[]
@@ -145,8 +155,11 @@ export type UnitStatus =
 
 /** 单个单元的验证结果。 */
 export interface UnitVerdict {
+  /** 被验证的单元本身（含句子、引用与来源）。 */
   readonly unit: ClaimUnit
+  /** 该单元的最终结论。 */
   readonly status: UnitStatus
+  /** 导致该结论的结构化失败；`supported` 时为空数组。 */
   readonly failures: readonly Failure[]
   /** 最好的那份来源的关键词覆盖率（0~1），用于排序与灰区判断。 */
   readonly coverage: number
@@ -160,10 +173,15 @@ export interface VerificationStats {
   readonly sentences: number
   /** 携带引用的单元数。 */
   readonly units: number
+  /** 判定为“有支撑”的单元数。 */
   readonly supported: number
+  /** 判定为“部分支撑”的单元数。 */
   readonly partial: number
+  /** 判定为“无支撑”的单元数。 */
   readonly unsupported: number
+  /** 判定为“无法验证”（来源全部不可达）的单元数。 */
   readonly unreachable: number
+  /** 判定为“跳过”（有效词元太少）的单元数。 */
   readonly skipped: number
   /** 草稿中的引用标记总数。 */
   readonly citations: number
@@ -175,8 +193,11 @@ export interface VerificationStats {
 
 /** L3 的完整输出。 */
 export interface VerificationReport {
+  /** 被验证的草稿全文（L4 重写时以它为基准比对）。 */
   readonly draft: string
+  /** 逐单元的验证结论，按草稿出现顺序排列。 */
   readonly units: readonly UnitVerdict[]
+  /** 整篇统计量，供决策层做阈值判断与日志输出。 */
   readonly stats: VerificationStats
   /** 每千字引用数，用于检测“被要求重写后把引用删光”的规避行为。 */
   readonly citationDensity: number
@@ -197,9 +218,17 @@ export type AbortCause =
   /** 引用密度骤降：用删引用替代修复 */
   | 'citation-collapse'
 
-/** L4 的四种动作（放行 / 标记 / 重写 / 熔断）。 */
+/**
+ * L4 的四种动作（放行 / 标记 / 重写 / 熔断）。
+ * 可穷举的联合类型让决策层用 `switch (decision.kind)` 就能分支，
+ * 且每种动作都带 `reason`，保证日志与用户提示里始终有可解释的说明。
+ */
 export type Decision =
+  /** 放行：全部单元有支撑，或问题轻微到不值得打扰用户 */
   | { readonly kind: 'pass'; readonly reason: string }
+  /** 标注：输出照常放行，但把验证结论写进日志/附注，供用户自行判断 */
   | { readonly kind: 'annotate'; readonly reason: string }
+  /** 重写：把草稿退回模型，`feedback` 是面向模型的结构化修复指令 */
   | { readonly kind: 'rewrite'; readonly reason: string; readonly feedback: string }
+  /** 熔断：停止重试，`cause` 区分“生成不忠实”“检索不足”等具体原因 */
   | { readonly kind: 'abort'; readonly cause: AbortCause; readonly reason: string }

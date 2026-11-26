@@ -121,7 +121,28 @@ L4 用它区分“生成不忠实”（材料在手没写对 → 值得重写）
 | `unitJaccardStop` | `0.85` | 失败单元相似度熔断阈值 |
 | `citationCollapseRatio` | `0.5` | 引用密度坍缩熔断阈值 |
 
-## 校验工具
+## 在输入框里调用（`/citeloop`）
+
+DSH 的输入框有两个触发器：`/` 是**命令**（候选来自服务端的 `ctx.commands`，插件可以注册），
+`@` 是**引用菜单**（文件 / 目录 / 会话，由浏览器端的 `ui-reference` 插件注册）。
+服务端 cordis 插件够不到 `@` 的注册面，所以这里注册的是斜杠命令：
+
+| 输入 | 行为 |
+| --- | --- |
+| `/citeloop` | 校验本轮最后一条回答 |
+| `/citeloop last` | 同上，显式写法 |
+| `/citeloop <文本>` | 校验你粘进去的文本（末尾可带参考资料列表） |
+
+结果直接回到对话里（`✔ 引用校验通过` / `✘ 引用校验未通过` + 逐单元明细），
+**不修改回合状态、不 steer 模型**——想走自动重写闭环请用 `mode: rewrite` 的钩子。
+`commands` 是可选依赖：没有命令层的组合里插件照常工作，只是输入框里没有这条命令
+（用 `ctx.inject` 等待服务，而不是写进 `inject`，否则缺命令层时整个插件会停在 PENDING）。
+
+> 想让 `@` 菜单里出现插件条目，需要另写**客户端插件**（浏览器 bundle + `dsh.client` 清单，
+> 在 DSH 的 `cordis.patch.yml` 里注册），属于改宿主安装本身，不在本仓库范围内。
+
+## 校验工具（`citeloop_check`）
+
 
 插件同时注册了 `citeloop_check`，可以对任意草稿**主动**跑一次校验（不改回合、不重写），
 适合在排查“为什么这句话被判无支撑”时用：
@@ -159,6 +180,8 @@ src/
   state.ts      跨轮次状态（按回合发放重试额度）
   pipeline.ts   编排
   tools.ts      citeloop_check 工具
+  command.ts    /citeloop 斜杠命令（输入框入口）
+  messages.ts   取最后一条 assistant 文本（钩子与命令共用）
 scripts/
   selftest.ts   离线自测
 ```

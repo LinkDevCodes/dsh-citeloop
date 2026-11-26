@@ -5,6 +5,10 @@
  * 1. 不依赖任何宿主运行期模块（对 `ContentBlock` 只有 type-only 依赖，编译期擦除），
  *    因此 scripts/selftest.ts 可以脱离 harness 直接加载本文件做单测。
  * 2. 全部函数无副作用、不读全局状态，便于在决策层复用同一套口径。
+ *
+ * 流水线位置：本文件属于 **L2 解析层** 的基础设施（把消息展平、切句、抓取后清洗正文），
+ * 同时被 **L3 验证层** 复用（词元覆盖率、数字/实体锚点、Jaccard 熔断判定）。
+ * 它只做机械的文本处理，不包含任何“是否可信”的结论。
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 
@@ -32,8 +36,11 @@ const HAN_STOPWORDS = new Set('的了是在和与及或而也有这那其之为�
 
 /** 一句话连同它在原文里的位置。 */
 export interface Sentence {
+  /** 句子文本（已 trim，不含尾部的断句符）。 */
   readonly text: string
+  /** 句子在原文中的起始偏移（含）。 */
   readonly start: number
+  /** 句子在原文中的结束偏移（不含）。 */
   readonly end: number
 }
 
@@ -42,8 +49,18 @@ export interface Sentence {
  * 只拼接 text 块：图片/文件块对“引用-来源”比对没有直接价值，
  * 且它们的占位文本会污染关键词覆盖率。
  *
- * @param content - 助手消息的内容块。
- * @returns 以换行连接的纯文本。
+ * @param content - 助手消息的内容块数组，按原顺序处理；非 text 块会被跳过。
+ * @returns 以换行连接的纯文本；没有 text 块时返回空串。
+ * @example
+ * ```ts
+ * import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+ * import { blocksToText } from './text'
+ * const blocks = [
+ *   { type: 'text', text: '甲' },
+ *   { type: 'text', text: '乙' },
+ * ] as unknown as ContentBlock[]
+ * blocksToText(blocks) // => '甲\n乙'
+ * ```
  */
 export function blocksToText(content: readonly ContentBlock[]): string {
   const parts: string[] = []
@@ -53,7 +70,21 @@ export function blocksToText(content: readonly ContentBlock[]): string {
   return parts.join('\n')
 }
 
-/** NFKC 规范化 + 小写，作为所有字符串比对的统一入口。 */
+/**
+ * NFKC 规范化 + 小写，作为所有字符串比对的统一入口。
+ *
+ * 全角/半角、兼容字符先折叠成同一形态（`ＧＰＴ` → `GPT`），再做大小写归一，
+ * 避免“看起来一样”的两段文本在覆盖率里被判成不同词元。
+ *
+ * @param input - 任意原始文本，允许为空串。
+ * @returns 规范化后的小写文本，长度可能与原文不同。
+ * @example
+ * ```ts
+ * import { normalizeText } from './text'
+ * normalizeText('ＧＰＴ-4') // => 'gpt-4'
+ * normalizeText('BERT') // => 'bert'
+ * ```
+ */
 export function normalizeText(input: string): string {
   return input.normalize('NFKC').toLowerCase()
 }
@@ -64,13 +95,26 @@ export function normalizeText(input: string): string {
  * 断句符：中文句号/问号/叹号/分号、换行、以及「英文句点 + 空白 + 大写/数字/引号」。
  * 英文句点必须跟空白和大写才断句，避免把 `v1.2`、`e.g.`、`3.5` 切断。
  *
- * @param text - 草稿全文。
- * @returns 非空句子数组，偏移基于原文。
+ * @param text - 草稿全文；允许为空串。
+ * @returns 非空句子数组，偏移基于原文（断句符本身不计入句子）。
+ * @example
+ * ```ts
+ * import { splitSentences } from './text'
+ * splitSentences('第一句。第二句！')
+ * // => [{ text: '第一句', start: 0, end: 3 }, { text: '第二句', start: 4, end: 7 }]
+ * ```
  */
 export function splitSentences(text: string): Sentence[] {
   const pattern = /[。！？；!?;]+|\n+|\.[ \t]+(?=[A-Z0-9“"（(])/g
   const sentences: Sentence[] = []
   let cursor = 0
+  /**
+   * 把 `[start, end)` 切片裁剪后写入结果，偏移跟随 trim 调整。
+   *
+   * @param start - 切片在原文中的起始偏移（含）。
+   * @param end - 切片在原文中的结束偏移（不含）。
+   * @returns 无返回值。
+   */
   const push = (start: number, end: number): void => {
     const raw = text.slice(start, end)
     const trimmed = raw.trim()
@@ -100,8 +144,14 @@ const HAN_RUN = /\p{Script=Han}+/gu
  * 验证器必须是**确定性且零依赖**的；bigram 对“检索增强 / 增强生成”这类
  * 中文学术短语有足够召回，且不会因为词典版本变化导致阈值漂移。
  *
- * @param text - 任意文本。
- * @returns 词元数组（含重复，调用方按需去重）。
+ * @param text - 任意文本（草稿句或来源正文）。
+ * @returns 词元数组；大小写已归一并含重复，调用方按需用 {@link uniqueTokens} 去重。
+ * @example
+ * ```ts
+ * import { tokenize } from './text'
+ * tokenize('the study of BERT') // => ['study', 'bert']
+ * tokenize('检索增强') // => ['检索', '索增', '增强']
+ * ```
  */
 export function tokenize(text: string): string[] {
   const normalized = normalizeText(text)
@@ -126,7 +176,17 @@ export function tokenize(text: string): string[] {
   return tokens
 }
 
-/** 去重（保留首次出现顺序），让覆盖率按“词元种类”而不是“出现次数”计算。 */
+/**
+ * 去重（保留首次出现顺序），让覆盖率按“词元种类”而不是“出现次数”计算。
+ *
+ * @param tokens - 可能含重复的词元列表。
+ * @returns 去重后的词元数组，顺序为首次出现顺序。
+ * @example
+ * ```ts
+ * import { uniqueTokens } from './text'
+ * uniqueTokens(['b', 'a', 'b']) // => ['b', 'a']
+ * ```
+ */
 export function uniqueTokens(tokens: readonly string[]): string[] {
   return [...new Set(tokens)]
 }
@@ -149,9 +209,16 @@ export interface Coverage {
  * 用覆盖率而不是 Jaccard：来源通常比陈述长得多，Jaccard 会被来源长度稀释，
  * 导致“高度相关的长文档”反而得分很低。
  *
- * @param claim - 陈述句。
- * @param source - 来源正文。
- * @returns 覆盖率与命中/缺失词元。
+ * @param claim - 陈述句（通常是单元的 `prose`）。
+ * @param source - 来源正文（已清洗、已截断）。
+ * @returns 覆盖率（0~1）与命中/缺失词元；陈述无有效词元时覆盖率记为 1。
+ * @example
+ * ```ts
+ * import { coverageOf } from './text'
+ * const r = coverageOf('gpt-4 improves retrieval', 'retrieval with gpt-4 works')
+ * r.coverage // => 0.6666666666666666（命中 gpt-4 与 retrieval，共 3 个词元）
+ * r.missing // => ['improves']
+ * ```
  */
 export function coverageOf(claim: string, source: string): Coverage {
   const claimTokens = uniqueTokens(tokenize(claim))
@@ -166,7 +233,19 @@ export function coverageOf(claim: string, source: string): Coverage {
   }
 }
 
-/** 两个词元集合的 Jaccard 相似度，用于「连续两次失败单元是否几乎没变」的熔断判定。 */
+/**
+ * 两个词元集合的 Jaccard 相似度，用于「连续两次失败单元是否几乎没变」的熔断判定。
+ *
+ * @param left - 上一次失败的单元词元（通常已去重）。
+ * @param right - 本次失败的单元词元（通常已去重）。
+ * @returns 交集/并集（0~1）；两边都为空时记为 1（视为完全重合）。
+ * @example
+ * ```ts
+ * import { jaccard } from './text'
+ * jaccard(['a', 'b'], ['b', 'c']) // => 0.3333333333333333
+ * jaccard([], []) // => 1
+ * ```
+ */
 export function jaccard(left: readonly string[], right: readonly string[]): number {
   if (left.length === 0 && right.length === 0) return 1
   const a = new Set(left)
@@ -179,7 +258,18 @@ export function jaccard(left: readonly string[], right: readonly string[]): numb
   return union === 0 ? 0 : intersection / union
 }
 
-/** 取出现频率最高的 k 个词元（同频按字典序，保证结果确定、可复现）。 */
+/**
+ * 取出现频率最高的 k 个词元（同频按字典序，保证结果确定、可复现）。
+ *
+ * @param tokens - 词元列表，允许含重复（频率即出现次数）。
+ * @param k - 最多返回的个数，非负整数；超过去重后总数时返回全部。
+ * @returns 按频率降序、同频按字典序升序排列的前 k 个词元。
+ * @example
+ * ```ts
+ * import { topTokens } from './text'
+ * topTokens(['b', 'a', 'b', 'c', 'a', 'b'], 2) // => ['b', 'a']
+ * ```
+ */
 export function topTokens(tokens: readonly string[], k: number): string[] {
   const counts = new Map<string, number>()
   for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1)
@@ -189,7 +279,21 @@ export function topTokens(tokens: readonly string[], k: number): string[] {
     .map(([token]) => token)
 }
 
-/** 判断一段响应体是否像 HTML。 */
+/**
+ * 判断一段响应体是否像 HTML。
+ *
+ * 只嗅探前 2000 个字符：既够快，也避免被一篇长文正文里的 `<div` 字样误判；
+ * 用它决定要不要走 {@link stripHtml}。
+ *
+ * @param input - 抓取回来的响应体（可能是 HTML，也可能是纯文本）。
+ * @returns 像 HTML 返回 `true`，否则 `false`。
+ * @example
+ * ```ts
+ * import { looksLikeHtml } from './text'
+ * looksLikeHtml('<!doctype html><html><body>hi</body></html>') // => true
+ * looksLikeHtml('纯文本正文') // => false
+ * ```
+ */
 export function looksLikeHtml(input: string): boolean {
   return /<\/?(?:html|body|div|p|span|article|main|head|meta|title)[\s>/]|<!doctype/i.test(input.slice(0, 2000))
 }
@@ -218,6 +322,14 @@ const HTML_ENTITIES: Record<string, string> = {
  *
  * 去掉 script/style/noscript/注释（它们会带入与正文无关的关键词，直接污染覆盖率），
  * 反转义常见实体，标签替换成空格，最后折叠空白。
+ *
+ * @param input - 原始 HTML 字符串。
+ * @returns 去除标签与实体、空白已折叠的纯文本。
+ * @example
+ * ```ts
+ * import { stripHtml } from './text'
+ * stripHtml('<p>Hello&nbsp;<b>World</b></p>') // => 'Hello World'
+ * ```
  */
 export function stripHtml(input: string): string {
   let text = input
@@ -233,12 +345,36 @@ export function stripHtml(input: string): string {
   return collapseWhitespace(text)
 }
 
-/** 折叠连续空白为单个空格并 trim。 */
+/**
+ * 折叠连续空白为单个空格并 trim。
+ *
+ * 换行被保留为单个换行（不压成空格），因为段落边界对切句仍有用。
+ *
+ * @param input - 任意文本。
+ * @returns 空格已折叠、首尾已 trim 的文本。
+ * @example
+ * ```ts
+ * import { collapseWhitespace } from './text'
+ * collapseWhitespace('a   b\n\n\nc') // => 'a b\nc'
+ * ```
+ */
 export function collapseWhitespace(input: string): string {
   return input.replace(/[\t\f\v ]+/g, ' ').replace(/ *\n+ */g, '\n').replace(/\n{2,}/g, '\n').trim()
 }
 
-/** 按字符数截断，尾部加省略号。来源正文必须截断，否则超长页面会拖垮验证耗时。 */
+/**
+ * 按字符数截断，尾部加省略号。来源正文必须截断，否则超长页面会拖垮验证耗时。
+ *
+ * @param input - 原始文本。
+ * @param max - 允许的最大字符数（含省略号），非负整数。
+ * @returns 长度不超过 `max` 的文本；未超长时原样返回。
+ * @example
+ * ```ts
+ * import { truncate } from './text'
+ * truncate('abcdef', 4) // => 'abc…'
+ * truncate('abc', 4) // => 'abc'
+ * ```
+ */
 export function truncate(input: string, max: number): string {
   if (input.length <= max) return input
   return `${input.slice(0, Math.max(0, max - 1))}…`
@@ -263,15 +399,34 @@ export interface NumberToken {
  */
 const NUMBER_PATTERN = /(?<![\w.])(\d+(?:[.,]\d+)*)\s*(%|％|‰|亿|万|千|百|余|多|人|例|名|项|次|倍|年|月|日|页|章|节|条|种|家|所|篇|GB|MB|TB|ms|分钟|小时|元|美元|欧元)?/g
 
-/** 归一化数字：NFKC、去掉千分位与空白。 */
+/**
+ * 归一化数字：NFKC、去掉千分位与空白。
+ *
+ * @param raw - 从原文截出的数字片段，如 `1,234.5`。
+ * @returns 可直接做相等比较的数字串，如 `1234.5`。
+ * @example
+ * ```ts
+ * import { normalizeNumber } from './text'
+ * normalizeNumber('1,234.5') // => '1234.5'
+ * ```
+ */
 export function normalizeNumber(raw: string): string {
   return raw.normalize('NFKC').replace(/[,\s_]/g, '')
 }
 
 /**
  * 抽取文本中的全部数字锚点。
+ *
+ * 只抽“值 + 单位”，不做语义解释；严格与否由 `strictNumbers` 在 L3 决定。
+ *
  * @param text - 任意文本（草稿或来源）。
  * @returns 数字锚点数组；顺序与原文一致。
+ * @example
+ * ```ts
+ * import { extractNumberTokens } from './text'
+ * extractNumberTokens('2021 年增长了 37.5%')
+ * // => [{ raw: '2021 年', value: '2021', unit: '年' }, { raw: '37.5%', value: '37.5', unit: '%' }]
+ * ```
  */
 export function extractNumberTokens(text: string): NumberToken[] {
   const tokens: NumberToken[] = []
@@ -301,10 +456,22 @@ const QUOTED_NAME = /[“"《]([^”"》]{2,40})[”"》]/g
  *
  * @param text - 陈述句。
  * @returns 去重后的实体串（保留首次出现的大小写）。
+ * @example
+ * ```ts
+ * import { extractEntities } from './text'
+ * extractEntities('BERT 与 CiteLoop 都引用《Attention》')
+ * // => ['BERT', 'CiteLoop', 'Attention']
+ * ```
  */
 export function extractEntities(text: string): string[] {
   const found: string[] = []
   const seen = new Set<string>()
+  /**
+   * 记住一个候选实体：先 trim、丢弃长度 < 2 的，再按小写去重（保留首次出现写法）。
+   *
+   * @param value - 正则命中的原始片段，可能带空白。
+   * @returns 无返回值。
+   */
   const remember = (value: string): void => {
     const trimmed = value.trim()
     if (trimmed.length < 2) return

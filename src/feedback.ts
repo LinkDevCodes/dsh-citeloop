@@ -1,6 +1,9 @@
 /**
  * 反馈包构造器：把结构化的 `Failure[]` 翻译成模型能执行的重写指令。
  *
+ * 四层流水线位置：L4（决策层）的配套模块。`decide()` 判定 `rewrite` 时调用它
+ * 生成注入模型的反馈正文；本身不改判定，只负责“把失败说清楚”。
+ *
  * 方案书对这一层的要求是「**结构化失败信号**」而不是一句“请核对引用”：
  * 每个失败单元要写清是哪一句、哪类失败、缺了哪个数字/专名/关键词，
  * 并把检索期真正可用的证据片段贴出来，让重写有据可依。
@@ -12,7 +15,18 @@ import type { ResolvedConfig } from './config.ts'
 import { coverageOf, truncate } from './text.ts'
 import { failingVerdicts } from './verify.ts'
 
-/** 可读的失败类型名，用于反馈与日志。 */
+/**
+ * 把失败类型枚举翻译成面向模型/用户的中文短语。
+ *
+ * `switch` 覆盖 `FailKind` 的全部取值：增删失败类型时这里会一起暴露，
+ * 保证反馈与日志不会出现“未知失败”这种最难排查的输出。
+ *
+ * @param failure - 结构化失败信号；只用 `kind` 字段。
+ * @returns 对应的中文短语，例如 `numeric-missing` → “数字在来源中找不到”。
+ * @example
+ * describeFailure({ kind: 'entity-missing', severity: 'critical', detail: '未找到“PaLM”' })
+ * // '专名在来源中找不到'
+ */
 export function describeFailure(failure: Failure): string {
   switch (failure.kind) {
     case 'no-source':
@@ -33,6 +47,20 @@ export function describeFailure(failure: Failure): string {
 }
 
 
+/**
+ * 从候选来源里挑出与陈述最匹配的一份。
+ *
+ * 只接受覆盖率 ≥ `coverageThreshold` 的材料：把弱相关片段贴给模型，
+ * 等于暗示“这段可以当依据”，反而会诱发新的编造。
+ *
+ * @param prose - 陈述正文（已去掉引用标记），用于计算关键词覆盖率。
+ * @param evidence - 候选来源；`text` 为空的条目跳过，避免贴出空证据。
+ * @param config - 配置；用 `coverageThreshold`（0~1）过滤不合格片段。
+ * @returns 覆盖率最高且达标的来源；没有达标项时为 `undefined`。
+ * @example
+ * const doc = bestEvidence(verdict.unit.prose, evidence, config)
+ * // 命中时 doc.label 形如 'web_search'；未命中时为 undefined
+ */
 function bestEvidence(prose: string, evidence: readonly SourceDoc[], config: ResolvedConfig): SourceDoc | undefined {
   let best: SourceDoc | undefined
   let bestCoverage = 0
@@ -50,10 +78,18 @@ function bestEvidence(prose: string, evidence: readonly SourceDoc[], config: Res
 /**
  * 构造重写反馈包。
  *
- * @param report - 本次验证报告。
- * @param evidence - 检索期捕获的证据。
+ * 输出是一段可直接作为消息正文的 Markdown：逐单元给出原句、失败类型与缺失项，
+ * 再贴一份达标证据；最后用“硬性要求”把重写边界钉死（只改指定句、禁止删引用换笼统说法）。
+ * 之所以逐条点名而不是给总结：模型对“具体哪句、缺什么”的修复成功率远高于泛泛的“请核对”。
+ *
+ * @param report - 本次验证报告；失败单元由 `failingVerdicts()` 过滤。
+ * @param evidence - 检索期捕获的证据；与单元自身证据合并后择优。
  * @param config - 配置（用于证据筛选阈值与片段长度）。
- * @returns 可直接作为消息正文的指令文本。
+ * @returns 可直接作为消息正文的指令文本，以“【引用校验未通过】”开头。
+ * @example
+ * const feedback = buildFeedback(report, evidence, config)
+ * // feedback 首行为“【引用校验未通过】…”，随后逐单元列出原句、失败项与可用证据；
+ * // 直接作为下一条消息正文喂回模型即可触发定点重写
  */
 export function buildFeedback(
   report: VerificationReport,

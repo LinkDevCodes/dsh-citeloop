@@ -236,6 +236,38 @@ await test('evidenceFromTool 能把工具输出压成来源', () => {
   assert.equal(doc?.origin, 'retrieval')
 })
 
+// ---- 输入框入口（/citeloop）-----------------------------------------------------
+
+await test('/citeloop 命令已注册且能校验给定文本', async () => {
+  const { COMMAND_NAME, registerCiteLoopCommand } = await import('../src/command.ts')
+  // 只关心注册出来的 definition 形状与 handler 行为，所以用最小的假注册表。
+  const registered: { name: string; description: string; input: { hint: string }; handler: (i: unknown) => Promise<unknown> }[] = []
+  const runtime = { register: (definition: (typeof registered)[number]) => { registered.push(definition); return () => {} } }
+  registerCiteLoopCommand(runtime as never, config)
+
+  assert.equal(registered.length, 1)
+  const definition = registered[0]!
+  assert.equal(definition.name, COMMAND_NAME)
+  assert.ok(definition.input.hint.includes('last'), '提示语里要告诉用户可以校验上一条回答')
+
+  const invocation = (rawInput: string, messages: unknown[] = []) => ({
+    commandId: 'test',
+    agent: { session: { deriveMessages: () => messages } },
+    rawInput,
+    attachments: [],
+    signal: new AbortController().signal,
+  })
+
+  const given = await definition.handler(invocation('这段文本没有任何引用。')) as { kind: string; text: string }
+  assert.equal(given.kind, 'success')
+  assert.ok(given.text.includes('引用校验'), '结果里应当有结论行')
+
+  // 历史为空时校验上一条回答 → 应当以可读的错误结束，而不是抛异常。
+  const empty = await definition.handler(invocation('')) as { kind: string; text: string }
+  assert.equal(empty.kind, 'error')
+  assert.ok(empty.text.includes('/citeloop'))
+})
+
 // ---- 插件装配面 ----------------------------------------------------------------
 
 await test('插件导出 name / inject / apply', async () => {

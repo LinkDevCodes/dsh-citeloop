@@ -21,8 +21,21 @@ interface CheckOutput {
 /**
  * 注册 `citeloop_check` 工具。
  *
- * @param ctx - 宿主上下文；`tools` 注册表是 effect 作用域，插件卸载时自动注销。
- * @param config - 解析后的配置（阈值与抓取预算都来自它）。
+ * 工具注册是 effect：调用一次即生效，插件卸载时由 cordis 自动撤销，
+ * 所以这里不需要也不应该返回清理函数。
+ *
+ * 超时按“最坏情况”给足：每份来源最多 `fetchTimeoutMs`，一轮最多抓
+ * `maxFetchPerTurn` 份，再加一点处理余量；给少了会让整批抓取被工具层中断。
+ *
+ * @param ctx - 宿主上下文；必须已有 `tools` 服务（由 index.ts 的 `inject` 保证）。
+ * @param config - 解析后的配置；阈值、抓取预算与超时都取自它。
+ * @returns 无返回值。
+ * @example
+ * // 在 apply() 里装配（`options` 为 resolveConfig 的结果）
+ * registerCiteLoopTools(ctx, options)
+ * @example
+ * // 模型侧调用（工具名 + 唯一参数 text）
+ * // citeloop_check({ text: "据 [1]，P99 为 1200ms。\n\n[1] ... https://example.com/report" })
  */
 export function registerCiteLoopTools(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(defineTool({
@@ -52,6 +65,18 @@ export function registerCiteLoopTools(ctx: Context, config: ResolvedConfig): voi
     },
     timeoutMs: Math.max(60_000, config.fetchTimeoutMs * (config.maxFetchPerTurn + 1)),
     isConcurrencySafe: () => true,
+    /**
+     * 跑一次完整校验并返回结构化结果。
+     *
+     * 不做“是否放行”的判断、不改回合状态——工具是只读探针：
+     * 决策留给调用它的模型（看完 `details` 自己决定改不改）。
+     *
+     * @param args - 工具参数，只有 `text`（待校验草稿，可含末尾的参考资料列表）。
+     * @returns `summary` 一行统计、`details` 逐失败单元明细、`verdict` 为
+     *   `'pass'`（全部单元达标）或 `'needs-rewrite'`（存在无支撑/部分支撑单元）。
+     * @example
+     * const { verdict, details } = await run('citeloop_check', { text: draft })
+     */
     async execute(args: { text: string }) {
       const started = Date.now()
       logDebug(`citeloop_check 被调用（草稿 ${String(args.text.length)} 字）`)
