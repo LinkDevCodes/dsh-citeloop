@@ -49,6 +49,13 @@ export interface Config {
   unitJaccardStop: number
   /** 引用密度跌到首轮的该比例以下 → `citation-collapse` 熔断（防止靠删引用过关）。 */
   citationCollapseRatio: number
+  /**
+   * `/citeloop-report` 生成的 Markdown 报告是否在末尾附上“被校验的草稿原文”。
+   *
+   * 默认 `false`：报告的主线是结论与失败项，草稿只作复核材料；
+   * 需要把报告当评审证据存档时打开，原文会放进可折叠的 `<details>` 块里。
+   */
+  reportIncludeDraft: boolean
 }
 
 /** schemastery 配置 schema：cordis.yml 的 `config:` 与它做校验。 */
@@ -69,6 +76,7 @@ export const Config: z<Config> = z.object({
     .description('可回收为证据的检索类工具名'),
   unitJaccardStop: z.percent().default(0.85).description('失败单元相似度熔断阈值'),
   citationCollapseRatio: z.percent().default(0.5).description('引用密度坍缩比例阈值'),
+  reportIncludeDraft: z.boolean().default(false).description('Markdown 报告是否附上草稿原文'),
 })
 
 /** 已解析、已归一化的配置（值域被钳制过）。 */
@@ -94,6 +102,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = Object.freeze({
   retrievalTools: Object.freeze(['web_search', 'web_fetch', 'search', 'fetch', 'browse']),
   unitJaccardStop: 0.85,
   citationCollapseRatio: 0.5,
+  reportIncludeDraft: false,
 })
 
 /**
@@ -195,5 +204,6 @@ export function resolveConfig(
       : DEFAULT_CONFIG.retrievalTools,
     unitJaccardStop: clamp(source.unitJaccardStop ?? NaN, 0.1, 1, DEFAULT_CONFIG.unitJaccardStop),
     citationCollapseRatio: clamp(source.citationCollapseRatio ?? NaN, 0, 1, DEFAULT_CONFIG.citationCollapseRatio),
+    reportIncludeDraft: source.reportIncludeDraft ?? DEFAULT_CONFIG.reportIncludeDraft,
   })
 }

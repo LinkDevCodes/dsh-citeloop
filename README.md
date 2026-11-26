@@ -47,7 +47,7 @@ L4 用它区分“生成不忠实”（材料在手没写对 → 值得重写）
 一次“失败 → 退回重写 → 通过”的完整回合长这样：
 
 ```
-[citeloop] ✔ plugin-loaded · CiteLoop 引用校验已装配 · mode=rewrite · 覆盖率阈值=0.35 · 最多重写=2 次 · 工具=citeloop_check · 详细日志=开
+[citeloop] ✔ plugin-loaded · CiteLoop 引用校验已装配 · mode=rewrite · 覆盖率阈值=0.35 · 最多重写=2 次 · 工具=citeloop_check · 命令=/citeloop, /citeloop-report · 详细日志=开
 [citeloop]    evidence ← web_fetch · https://example.com/report-2024
 [citeloop] ── L1 触发 ── turn=3 · 草稿 412 字
 [citeloop]    L2 解析 · 引用 5 条 · 陈述单元 4 个 · 参考条目 3 条 3ms
@@ -59,14 +59,26 @@ L4 用它区分“生成不忠实”（材料在手没写对 → 值得重写）
 [citeloop] ✔ 放行 · 单元 4（supported 4 / partial 0 / …）；引用 5 条；密度 11.20/千词；无失败 （校验 640ms）
 ```
 
+用户主动敲 `/citeloop-report` 时，末尾会多一行报告体积（正文回到对话里，不在终端）：
+
+```
+[citeloop] · /citeloop-report 被调用（校验上一条回答，412 字）
+[citeloop]    L2 解析 · 引用 5 条 · 陈述单元 4 个 · 参考条目 3 条 2ms
+[citeloop]    L2 取证 · 可读来源 4 个 · 不可达 1 个 0ms
+[citeloop]    L3 验证 · 达标 3 · 部分 1 · 无支撑 0 · 不可达 1 · 跳过 0 1ms
+[citeloop] 📄 Markdown 报告 · 3211 字 （渲染 4ms）
+[citeloop] · /citeloop-report 结论 pass（总耗时 640ms）
+```
+
 - 颜色开关：默认开；`NO_COLOR=1` 或 `CITELOOP_COLOR=0` 关闭，`CITELOOP_COLOR=1` 强制开启
   （`dshRunner.py` 在终端里会自动设成 `1`，避免 DSH 子进程环境里的 `NO_COLOR` 把颜色吃掉）。
 - 详细程度：`verbose: false` 时只保留每回合一行结论（`✔ 放行` / `! 标记` / `↻ 退回重写` / `⛔ 熔断`）。
 - 为什么不用 `ctx.logger.info`：DSH 在 web 模式下不把 info 级日志转发到 stdout，`ctx.logger.warn`
   那行只在会话日志里可见，**终端判断“插件装没装上”要看 `plugin-loaded` 这行**。
 
-配套的 `dshRunner.py` 会额外做三件事：识别 `plugin-loaded` 打印绿色成功横幅（含启动耗时）；
-对 `Cannot find module` / `EADDRINUSE` / `ERR_REQUIRE_ESM` / `error TS####` / `EPERM` 等常见故障
+配套的 `dshRunner.py` 会额外做三件事：识别 `plugin-loaded` 打印绿色成功横幅（含启动耗时、可用命令）；
+对 `Cannot find module` / `EADDRINUSE` / `ERR_REQUIRE_ESM` / `error TS####` / `EPERM` /
+命令重复注册 / 命令定义不合法 / 命令不可用 等常见故障
 自动补一段「现象 / 原因 / 建议」的彩色诊断（同类只提示一次）；退出时打印退出码。
 
 ## 启用
@@ -120,8 +132,9 @@ L4 用它区分“生成不忠实”（材料在手没写对 → 值得重写）
 | `retrievalTools` | `web_search, web_fetch, search, fetch, browse` | 哪些工具的输出可回收为证据 |
 | `unitJaccardStop` | `0.85` | 失败单元相似度熔断阈值 |
 | `citationCollapseRatio` | `0.5` | 引用密度坍缩熔断阈值 |
+| `reportIncludeDraft` | `false` | Markdown 报告是否在末尾附上草稿原文 |
 
-## 在输入框里调用（`/citeloop`）
+## 在输入框里调用（`/citeloop`、`/citeloop-report`）
 
 DSH 的输入框有两个触发器：`/` 是**命令**（候选来自服务端的 `ctx.commands`，插件可以注册），
 `@` 是**引用菜单**（文件 / 目录 / 会话，由浏览器端的 `ui-reference` 插件注册）。
@@ -129,17 +142,70 @@ DSH 的输入框有两个触发器：`/` 是**命令**（候选来自服务端�
 
 | 输入 | 行为 |
 | --- | --- |
-| `/citeloop` | 校验本轮最后一条回答 |
+| `/citeloop` | 校验本轮最后一条回答，回屏幕摘要 |
 | `/citeloop last` | 同上，显式写法 |
 | `/citeloop <文本>` | 校验你粘进去的文本（末尾可带参考资料列表） |
+| `/citeloop-report` | 校验本轮最后一条回答，回一份 Markdown 报告 |
+| `/citeloop-report last` | 同上，显式写法 |
+| `/citeloop-report <文本>` | 为这段文本生成 Markdown 报告 |
 
-结果直接回到对话里（`✔ 引用校验通过` / `✘ 引用校验未通过` + 逐单元明细），
-**不修改回合状态、不 steer 模型**——想走自动重写闭环请用 `mode: rewrite` 的钩子。
-`commands` 是可选依赖：没有命令层的组合里插件照常工作，只是输入框里没有这条命令
+两条命令共用同一套校验逻辑，差别只在呈现：`/citeloop` 给**屏幕摘要**（单行统计 + 最多 8 个失败单元），
+`/citeloop-report` 给**文档**（结论 / 统计表 / 单元明细 / 失败明细 / 来源清单，可选附上草稿原文）。
+结果直接回到对话里，**不修改回合状态、不 steer 模型**——想走自动重写闭环请用 `mode: rewrite` 的钩子。
+`commands` 是可选依赖：没有命令层的组合里插件照常工作，只是输入框里没有这两条命令
 （用 `ctx.inject` 等待服务，而不是写进 `inject`，否则缺命令层时整个插件会停在 PENDING）。
 
 > 想让 `@` 菜单里出现插件条目，需要另写**客户端插件**（浏览器 bundle + `dsh.client` 清单，
 > 在 DSH 的 `cordis.patch.yml` 里注册），属于改宿主安装本身，不在本仓库范围内。
+
+## Markdown 报告（`/citeloop-report`）
+
+报告是纯文本，可以直接粘进 issue / PR / 周报，或存成 `.md` 归档：
+
+```markdown
+# CiteLoop 引用校验报告
+
+- 生成时间：2026-11-26 16:30:00
+- 运行模式：`mark`（覆盖率阈值 0.35）
+- 被校验草稿：201 字 · 句子 3 句
+
+## 结论
+
+**❌ 未通过**：3 个单元中 1 个无支撑、1 个来源不可达。
+
+## 统计
+
+| 指标 | 数值 |
+| --- | --- |
+| 句子 / 单元 | 3 / 3 |
+| ✅ 有支撑 | 1 |
+| ❌ 无支撑 | 1 |
+| 🔌 来源不可达 | 1 |
+| 引用（已解析） | 3（3） |
+| 失败类型 | `numeric-missing` ×1 · `source-unreachable` ×1 |
+
+## 单元明细
+
+| 单元 | 结论 | 覆盖率 | 引用 | 失败 |
+| --- | --- | --- | --- | --- |
+| `u1` | ✅ 有支撑 | 100% | `[1]` | — |
+| `u2` | ❌ 无支撑 | 100% | `[2]` | 数字在来源中找不到 |
+| `u3` | 🔌 来源不可达 | 0% | `[3]` | 来源无法访问 |
+
+## 失败明细
+
+### `u2` · ❌ 无支撑（覆盖率 100%）
+
+> 启动耗时约 1500 毫秒 [2]
+
+- **数字在来源中找不到**（critical）：来源中找不到数字 1500
+  - 缺失项：`1500`
+```
+
+段落顺序固定：抬头 → 结论 → 统计 → 单元明细 → 失败明细 → 来源清单 →（可选）草稿附录。
+`reportIncludeDraft: true` 时末尾会多一个 `<details>` 折叠块，附上被校验的草稿原文（默认关闭）。
+
+生成时间来自本机时钟，不会写出宿主机以外的信息；渲染过程不联网、不调用任何模型。
 
 ## 校验工具（`citeloop_check`）
 
@@ -180,7 +246,8 @@ src/
   state.ts      跨轮次状态（按回合发放重试额度）
   pipeline.ts   编排
   tools.ts      citeloop_check 工具
-  command.ts    /citeloop 斜杠命令（输入框入口）
+  report.ts     Markdown 报告渲染（/citeloop-report 的输出）
+  command.ts    /citeloop 与 /citeloop-report 斜杠命令（输入框入口）
   messages.ts   取最后一条 assistant 文本（钩子与命令共用）
 scripts/
   selftest.ts   离线自测

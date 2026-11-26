@@ -377,3 +377,20 @@ export function logDebug(message: string): void {
   if (!verbose) return
   emit(`${TAG} ${paint('·', 90)} ${paint(message, 90)}`)
 }
+
+/**
+ * Markdown 报告已生成。
+ *
+ * 不受 `verbose` 影响：这是用户主动敲 `/citeloop-report` 的直接产物，
+ * 若静默，用户会误以为命令没生效（报告本身出现在会话里，但长文容易被折叠）。
+ *
+ * @param chars - 报告字符数（用于判断是否被平台截断）。
+ * @param ms - 渲染耗时（毫秒），只统计排版，不含抓取来源。
+ * @returns 无返回值。
+ * @example
+ * logReport(3211, 4)
+ * // [citeloop] 📄 Markdown 报告 · 3211 字 （渲染 4ms）
+ */
+export function logReport(chars: number, ms: number): void {
+  emit(`${TAG} ${paint('📄 Markdown 报告', 36, 1)} · ${String(chars)} 字 ${paint(`（渲染 ${formatMs(ms)}）`, 90)}`)
+}

@@ -107,7 +107,7 @@ export function apply(ctx: Context, config: CiteLoopConfig): void {
   // 独立可调用的校验工具（用户/模型都可以主动跑一次，便于排查与回归）。
   registerCiteLoopTools(ctx, options)
 
-  // 用户入口：输入框里的 `/citeloop`。
+  // 用户入口：输入框里的 `/citeloop`（简版结论）与 `/citeloop-report`（Markdown 报告）。
   // `commands` 是可选依赖：没有命令层的组合（比如只跑 headless）照样能校验，
   // 所以用 ctx.inject 等它就绪，而不是写进 `inject` 数组——
   // 写进去的话，缺这个服务的部署里整个插件会一直停在 PENDING。
@@ -153,6 +153,7 @@ export function apply(ctx: Context, config: CiteLoopConfig): void {
   logReady(
     `mode=${options.mode} · 覆盖率阈值=${options.coverageThreshold.toFixed(2)} · `
     + `最多重写=${String(options.maxAttempts)} 次 · 工具=citeloop_check · `
+    + `命令=/citeloop, /citeloop-report · `
     + `详细日志=${options.verbose ? '开' : '关'}`,
   )
   ctx.logger.warn('[citeloop] The plugin has been successfully loaded and the verification closed loop is ready.')

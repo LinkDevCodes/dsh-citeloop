@@ -236,36 +236,99 @@ await test('evidenceFromTool 能把工具输出压成来源', () => {
   assert.equal(doc?.origin, 'retrieval')
 })
 
-// ---- 输入框入口（/citeloop）-----------------------------------------------------
+// ---- 输入框入口（/citeloop、/citeloop-report）-----------------------------------
 
-await test('/citeloop 命令已注册且能校验给定文本', async () => {
-  const { COMMAND_NAME, registerCiteLoopCommand } = await import('../src/command.ts')
-  // 只关心注册出来的 definition 形状与 handler 行为，所以用最小的假注册表。
+/** 参考条目不带 URL：走“元数据来源”分支，自测因此完全不联网。 */
+const OFFLINE_DRAFT = [
+  'DSH 的插件通过 cordis.yml 注册 [1]。',
+  '',
+  '## 参考资料',
+  '[1] DSH 插件文档（cordis.yml 注册）',
+].join('\n')
+
+/**
+ * 造一个最小的假命令注册表，并注册 CiteLoop 的两条命令。
+ *
+ * 只关心 definition 的形状与 handler 的行为，所以不需要真的 CommandRuntime。
+ */
+async function registerCommands(): Promise<{
+  registered: { name: string; description: string; input: { hint: string }; handler: (i: unknown) => Promise<unknown> }[]
+  invoke: (rawInput: string, messages?: unknown[]) => unknown
+}> {
+  const { registerCiteLoopCommand } = await import('../src/command.ts')
   const registered: { name: string; description: string; input: { hint: string }; handler: (i: unknown) => Promise<unknown> }[] = []
   const runtime = { register: (definition: (typeof registered)[number]) => { registered.push(definition); return () => {} } }
   registerCiteLoopCommand(runtime as never, config)
-
-  assert.equal(registered.length, 1)
-  const definition = registered[0]!
-  assert.equal(definition.name, COMMAND_NAME)
-  assert.ok(definition.input.hint.includes('last'), '提示语里要告诉用户可以校验上一条回答')
-
-  const invocation = (rawInput: string, messages: unknown[] = []) => ({
+  const invoke = (rawInput: string, messages: unknown[] = []): unknown => ({
     commandId: 'test',
     agent: { session: { deriveMessages: () => messages } },
     rawInput,
     attachments: [],
     signal: new AbortController().signal,
   })
+  return { registered, invoke }
+}
 
-  const given = await definition.handler(invocation('这段文本没有任何引用。')) as { kind: string; text: string }
+await test('/citeloop 与 /citeloop-report 均已注册', async () => {
+  const { COMMAND_NAME, REPORT_COMMAND_NAME } = await import('../src/command.ts')
+  const { registered } = await registerCommands()
+  assert.equal(registered.length, 2)
+  assert.deepEqual(registered.map((definition) => definition.name), [COMMAND_NAME, REPORT_COMMAND_NAME])
+  for (const definition of registered) {
+    assert.ok(definition.input.hint.includes('last'), '提示语里要告诉用户可以校验上一条回答')
+    assert.ok(definition.description.length > 0)
+  }
+})
+
+await test('/citeloop 能校验给定文本，空历史以可读错误结束', async () => {
+  const { registered, invoke } = await registerCommands()
+  const check = registered[0]!
+
+  const given = await check.handler(invoke('这段文本没有任何引用。')) as { kind: string; text: string }
   assert.equal(given.kind, 'success')
   assert.ok(given.text.includes('引用校验'), '结果里应当有结论行')
 
   // 历史为空时校验上一条回答 → 应当以可读的错误结束，而不是抛异常。
-  const empty = await definition.handler(invocation('')) as { kind: string; text: string }
+  const empty = await check.handler(invoke('')) as { kind: string; text: string }
   assert.equal(empty.kind, 'error')
   assert.ok(empty.text.includes('/citeloop'))
+})
+
+await test('/citeloop-report 输出 Markdown 报告', async () => {
+  const { registered, invoke } = await registerCommands()
+  const reportCommand = registered[1]!
+
+  const result = await reportCommand.handler(invoke(OFFLINE_DRAFT)) as { kind: string; text: string }
+  assert.equal(result.kind, 'success')
+  assert.ok(result.text.startsWith('# CiteLoop 引用校验报告'), `报告抬头不对：${result.text.slice(0, 60)}`)
+  for (const section of ['## 结论', '## 统计', '## 单元明细', '## 来源清单']) {
+    assert.ok(result.text.includes(section), `报告缺少小节 ${section}`)
+  }
+  assert.ok(result.text.includes('u1'), '单元明细里应当出现单元编号')
+  assert.ok(!result.text.includes('## 附：被校验的草稿'), '默认不附草稿原文')
+
+  // 没有历史、也没有给文本 → 可读错误，且提示里点名的是报告命令。
+  const empty = await reportCommand.handler(invoke('')) as { kind: string; text: string }
+  assert.equal(empty.kind, 'error')
+  assert.ok(empty.text.includes('/citeloop-report'))
+})
+
+await test('renderMarkdownReport 可附上草稿，且时间可注入', async () => {
+  const { renderMarkdownReport } = await import('../src/report.ts')
+  const { report } = await verifyText(GOOD_DRAFT, config, fetchOk)
+
+  const withDraft = renderMarkdownReport(report, {
+    mode: 'mark',
+    coverageThreshold: 0.35,
+    includeDraft: true,
+    now: new Date(2026, 10, 26, 16, 30, 0),
+  })
+  assert.ok(withDraft.includes('## 附：被校验的草稿'))
+  assert.ok(withDraft.includes(GOOD_DRAFT.split('\n')[0]!), '附录里应当有草稿正文')
+  assert.ok(withDraft.includes('2026-11-26 16:30:00'), '生成时间应当来自入参')
+
+  const withoutDraft = renderMarkdownReport(report, { now: new Date(2026, 10, 26, 16, 30, 0) })
+  assert.ok(!withoutDraft.includes('## 附：被校验的草稿'))
 })
 
 // ---- 插件装配面 ----------------------------------------------------------------
