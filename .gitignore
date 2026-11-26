@@ -1,1 +1,15 @@
-node_modules
+# 依赖：devDependencies 用 link: 指向本机 DSH 源码，换机器要重新 pnpm install，不入库
+node_modules/
+
+# 运行与调试产物
+*.log
+.dsh-load*.log
+coverage/
+dist/
+*.tsbuildinfo
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
