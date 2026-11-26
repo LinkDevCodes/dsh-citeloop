@@ -1,0 +1,24 @@
+# CiteLoop 的 cordis 叠加配置（patch 文件）。
+#
+# 用法（在 deepseek-harness 仓库根目录执行）：
+#   pnpm dsh web --patch E:/Projects/dsh-plugs/dsh-citeloop/cordis.yml
+#
+# 说明：
+# - `name` 必须是插件入口的**绝对路径**（Windows 下用正斜杠，避免 YAML/tsx 的转义问题）。
+# - `config` 会作为 apply(ctx, config) 的第二个参数传入，字段见 src/config.ts。
+# - 把 mode 改成 `off` 可整体关闭验证；改成 `enforce` 会在“检索不足/重试超限”时也强制反馈。
+- insert:
+    - id: citeloop
+      name: 'E:/Projects/dsh-plugs/dsh-citeloop/src/index.ts'
+      config:
+        mode: mark
+        maxAttempts: 2
+        coverageThreshold: 0.35
+        unitJaccardStop: 0.85
+        strictNumbers: false
+        requireCitations: false
+        retrievalTools:
+          - web_search
+          - web_fetch
+          - search
+          - fetch

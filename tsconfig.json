@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": ["../deepseek-harness/node_modules/@types"]
+  },
+  "include": ["src", "scripts"]
+}
