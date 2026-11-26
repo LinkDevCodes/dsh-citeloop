@@ -99,6 +99,10 @@ L4 用它区分“生成不忠实”（材料在手没写对 → 值得重写）
 
 `cordis.yml` 已在仓库里给出最小示例，路径必须写成**绝对路径**。
 
+> 换机器时注意两点：`node_modules` 不入库（`devDependencies` 用 `link:` 指向本机 DSH 源码），
+> 克隆后要改 `package.json` 里的 `link:` 路径再 `pnpm install`；`cordis.yml` 与上面命令里的路径
+> 是本机示例，按自己的目录改。
+
 ## 配置项
 
 | 字段 | 默认 | 说明 |
